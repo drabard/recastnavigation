@@ -36,6 +36,7 @@
 
 #include "Recast.h"
 #include "RecastDebugDraw.h"
+#include "RecastOpenCL.h"
 #include "InputGeom.h"
 #include "TestCase.h"
 #include "Filelist.h"
@@ -192,6 +193,8 @@ int main(int /*argc*/, char** /*argv*/)
 	
 	glEnable(GL_CULL_FACE);
 	glDepthFunc(GL_LEQUAL);
+
+	opencl_test();
 	
 	bool done = false;
 	while(!done)

@@ -8,6 +8,8 @@ endif ()
 
 add_library(RecastNavigation::Recast ALIAS Recast)
 
+target_link_libraries(Recast OpenCL)
+
 set(Recast_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/Include")
 
 target_include_directories(Recast PUBLIC
