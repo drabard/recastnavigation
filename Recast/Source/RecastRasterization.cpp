@@ -237,7 +237,13 @@ static void dividePoly(const float* in, int nin,
 }
 
 
-
+// todo[drabard]:
+// Can parallelize by batching triangles, and doing rasterizeTri for a batch.
+// 1. Change each of the rasterizeTriangles funcs to work on batches.
+// 2. Separate addSpan from rasterizeTri - it needs to be done in a separate step, since
+//    it requires writes to a single rcHeightfield for every batch.
+// 3. ???
+// 4. profit
 static bool rasterizeTri(const float* v0, const float* v1, const float* v2,
 						 const unsigned char area, rcHeightfield& hf,
 						 const float* bmin, const float* bmax,
@@ -333,6 +339,8 @@ static bool rasterizeTri(const float* v0, const float* v1, const float* v2,
 
 	return true;
 }
+
+
 
 /// @par
 ///
