@@ -13,6 +13,143 @@
 
 #define MAX_SOURCE_SIZE 0x100000
 
+const char *err_to_str(cl_int error)
+{
+    switch (error) {
+        case CL_SUCCESS:
+            return "CL_SUCCESS";
+        case CL_DEVICE_NOT_FOUND:
+            return "CL_DEVICE_NOT_FOUND";
+        case CL_DEVICE_NOT_AVAILABLE:
+            return "CL_DEVICE_NOT_AVAILABLE";
+        case CL_COMPILER_NOT_AVAILABLE:
+            return "CL_COMPILER_NOT_AVAILABLE";
+        case CL_MEM_OBJECT_ALLOCATION_FAILURE:
+            return "CL_MEM_OBJECT_ALLOCATION_FAILURE";
+        case CL_OUT_OF_RESOURCES:
+            return "CL_OUT_OF_RESOURCES";
+        case CL_OUT_OF_HOST_MEMORY:
+            return "CL_OUT_OF_HOST_MEMORY";
+        case CL_PROFILING_INFO_NOT_AVAILABLE:
+            return "CL_PROFILING_INFO_NOT_AVAILABLE";
+        case CL_MEM_COPY_OVERLAP:
+            return "CL_MEM_COPY_OVERLAP";
+        case CL_IMAGE_FORMAT_MISMATCH:
+            return "CL_IMAGE_FORMAT_MISMATCH";
+        case CL_IMAGE_FORMAT_NOT_SUPPORTED:
+            return "CL_IMAGE_FORMAT_NOT_SUPPORTED";
+        case CL_BUILD_PROGRAM_FAILURE:
+            return "CL_BUILD_PROGRAM_FAILURE";
+        case CL_MAP_FAILURE:
+            return "CL_MAP_FAILURE";
+        case CL_MISALIGNED_SUB_BUFFER_OFFSET:
+            return "CL_MISALIGNED_SUB_BUFFER_OFFSET";
+        case CL_EXEC_STATUS_ERROR_FOR_EVENTS_IN_WAIT_LIST:
+            return "CL_EXEC_STATUS_ERROR_FOR_EVENTS_IN_WAIT_LIST";
+        case CL_INVALID_VALUE:
+            return "CL_INVALID_VALUE";
+        case CL_INVALID_DEVICE_TYPE:
+            return "CL_INVALID_DEVICE_TYPE";
+        case CL_INVALID_PLATFORM:
+            return "CL_INVALID_PLATFORM";
+        case CL_INVALID_DEVICE:
+            return "CL_INVALID_DEVICE";
+        case CL_INVALID_CONTEXT:
+            return "CL_INVALID_CONTEXT";
+        case CL_INVALID_QUEUE_PROPERTIES:
+            return "CL_INVALID_QUEUE_PROPERTIES";
+        case CL_INVALID_COMMAND_QUEUE:
+            return "CL_INVALID_COMMAND_QUEUE";
+        case CL_INVALID_HOST_PTR:
+            return "CL_INVALID_HOST_PTR";
+        case CL_INVALID_MEM_OBJECT:
+            return "CL_INVALID_MEM_OBJECT";
+        case CL_INVALID_IMAGE_FORMAT_DESCRIPTOR:
+            return "CL_INVALID_IMAGE_FORMAT_DESCRIPTOR";
+        case CL_INVALID_IMAGE_SIZE:
+            return "CL_INVALID_IMAGE_SIZE";
+        case CL_INVALID_SAMPLER:
+            return "CL_INVALID_SAMPLER";
+        case CL_INVALID_BINARY:
+            return "CL_INVALID_BINARY";
+        case CL_INVALID_BUILD_OPTIONS:
+            return "CL_INVALID_BUILD_OPTIONS";
+        case CL_INVALID_PROGRAM:
+            return "CL_INVALID_PROGRAM";
+        case CL_INVALID_PROGRAM_EXECUTABLE:
+            return "CL_INVALID_PROGRAM_EXECUTABLE";
+        case CL_INVALID_KERNEL_NAME:
+            return "CL_INVALID_KERNEL_NAME";
+        case CL_INVALID_KERNEL_DEFINITION:
+            return "CL_INVALID_KERNEL_DEFINITION";
+        case CL_INVALID_KERNEL:
+            return "CL_INVALID_KERNEL";
+        case CL_INVALID_ARG_INDEX:
+            return "CL_INVALID_ARG_INDEX";
+        case CL_INVALID_ARG_VALUE:
+            return "CL_INVALID_ARG_VALUE";
+        case CL_INVALID_ARG_SIZE:
+            return "CL_INVALID_ARG_SIZE";
+        case CL_INVALID_KERNEL_ARGS:
+            return "CL_INVALID_KERNEL_ARGS";
+        case CL_INVALID_WORK_DIMENSION:
+            return "CL_INVALID_WORK_DIMENSION";
+        case CL_INVALID_WORK_GROUP_SIZE:
+            return "CL_INVALID_WORK_GROUP_SIZE";
+        case CL_INVALID_WORK_ITEM_SIZE:
+            return "CL_INVALID_WORK_ITEM_SIZE";
+        case CL_INVALID_GLOBAL_OFFSET:
+            return "CL_INVALID_GLOBAL_OFFSET";
+        case CL_INVALID_EVENT_WAIT_LIST:
+            return "CL_INVALID_EVENT_WAIT_LIST";
+        case CL_INVALID_EVENT:
+            return "CL_INVALID_EVENT";
+        case CL_INVALID_OPERATION:
+            return "CL_INVALID_OPERATION";
+        case CL_INVALID_GL_OBJECT:
+            return "CL_INVALID_GL_OBJECT";
+        case CL_INVALID_BUFFER_SIZE:
+            return "CL_INVALID_BUFFER_SIZE";
+        case CL_INVALID_MIP_LEVEL:
+            return "CL_INVALID_MIP_LEVEL";
+        case CL_INVALID_GLOBAL_WORK_SIZE:
+            return "CL_INVALID_GLOBAL_WORK_SIZE";
+        case CL_INVALID_PROPERTY:
+            return "CL_INVALID_PROPERTY";
+
+        default:
+            return "UNKNOWN ERROR";
+    }
+}
+
+bool check_error(const char* description, cl_int err_code)
+{
+    if(err_code != CL_SUCCESS)
+    {
+        printf("OpenCL Error: %s: %s\n", description, err_to_str(err_code));
+        return false;
+    }
+
+    return true;
+}
+
+bool check_program_build(cl_program program, cl_device_id device_id, cl_int err_code)
+{
+    if(err_code == CL_SUCCESS) return true;
+
+    check_error("Building program", err_code);
+
+    if(err_code == CL_BUILD_PROGRAM_FAILURE)
+    {
+        size_t len;
+        char buffer[2048];
+        clGetProgramBuildInfo(program, device_id, CL_PROGRAM_BUILD_LOG, sizeof(buffer), buffer, &len);
+        printf("%s\n", buffer);
+    }
+
+    return false;
+}
+
 struct opencl_state
 {
     cl_device_id device_id;
@@ -34,7 +171,7 @@ static bool opencl_init(struct opencl_state& state)
 
     status = clGetDeviceIDs( platform_id, CL_DEVICE_TYPE_DEFAULT, 1, 
             &state.device_id, &ret_num_devices);
-    if(status != CL_SUCCESS) return false;
+    check_error("Retrieving device IDs", status);
 
     // Create an OpenCL context
     state.context = clCreateContext( NULL, 1, &state.device_id, NULL, NULL, &status);
@@ -56,14 +193,14 @@ static bool opencl_init(struct opencl_state& state)
     // Create a program from the kernel source
     state.program = clCreateProgramWithSource(state.context, 1, 
             (const char **)&source_str, (const size_t *)&source_size, &status);
- 
+
     // Build the program
     status = clBuildProgram(state.program, 1, &state.device_id, NULL, NULL, NULL);
-    if(status != CL_SUCCESS) return false;
- 
+    check_program_build(state.program, state.device_id, status);
+
     // Create the OpenCL kernel
-    state.kernel = clCreateKernel(state.program, "test_kernel", &status);
-    if(status != CL_SUCCESS) return false;
+    state.kernel = clCreateKernel(state.program, "rasterize_tris", &status);
+    check_error("Creating kernel", status);
 
     return true;
 }
@@ -78,14 +215,7 @@ void opencl_test()
 	printf("Start OpenCL test\n");
 
     opencl_state ocl_state;
-    if(opencl_init(ocl_state))
-    {
-        printf("Init works.\n");
-    }
-    else
-    {
-        printf("Init borked.\n");
-    }
+    opencl_init(ocl_state);
 
     // rcRasterizeTriangles_OpenCL(rcContext* ctx, const float* verts, const int nv,
     //                       const int* tris, const unsigned char* areas, const int nt,
@@ -96,6 +226,9 @@ void opencl_test()
     static unsigned char areas[] = {42};
 
     rcHeightfield dummyHF;
+    dummyHF.bmin[0] = 1.0f;
+    dummyHF.bmin[1] = 42.0f;
+    dummyHF.bmin[2] = 33.0f;
     rcRasterizeTriangles_GPU(nullptr,   // rcContext* ctx
                                 verts,   // const float* verts
                                 sizeof(verts)/sizeof(verts[0]),         // const int nv
@@ -129,6 +262,7 @@ bool rcRasterizeTriangles_GPU(rcContext* ctx, const float* verts, const int nv,
     // Make sure whatever architecture that is, the sizes are consistent.
     // todo[drabard]: This could be a static assert.
     rcAssert(sizeof(int) == sizeof(cl_int)) 
+    rcAssert(sizeof(float) == sizeof(cl_float)) 
 
     // Put things into memory
     // Constant:
@@ -136,7 +270,6 @@ bool rcRasterizeTriangles_GPU(rcContext* ctx, const float* verts, const int nv,
     // Global:
     // verts [nv], tris [nt], areas [nt], 
     //      todo[drabard]: !!!output!!!
-
     cl_int errcode; 
 
     size_t verts_buf_size = nv * 3 * sizeof(float);
@@ -147,12 +280,29 @@ bool rcRasterizeTriangles_GPU(rcContext* ctx, const float* verts, const int nv,
     //     size_t size,
     //     void* host_ptr,
     //     cl_int* errcode_ret);
-    cl_mem verts_buf = clCreateBuffer(ocl_state.context, CL_MEM_READ_ONLY, verts_buf_size, 0, &errcode);
-    errcode != CL_SUCCESS ? printf("Failed to create vertex buffer.\n") : printf("Verts buffer created.\n");
-    cl_mem tris_buf = clCreateBuffer(ocl_state.context, CL_MEM_READ_ONLY, tris_buf_size, 0, &errcode);
-    errcode != CL_SUCCESS ? printf("Failed to create tris buffer.\n") : printf("Tris buffer created.\n");
-    cl_mem areas_buf = clCreateBuffer(ocl_state.context, CL_MEM_READ_ONLY, areas_buf_size, 0, &errcode);
-    errcode != CL_SUCCESS ? printf("Failed to create areas buffer.\n") : printf("Areas buffer created.\n");
+    cl_mem verts_buf = clCreateBuffer(ocl_state.context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, verts_buf_size, (void*)verts, &errcode);
+    check_error("Creating vertex buffer", errcode);
+    cl_mem tris_buf = clCreateBuffer(ocl_state.context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, tris_buf_size, (void*)tris, &errcode);
+    check_error("Creating tris buffer", errcode);
+    cl_mem areas_buf = clCreateBuffer(ocl_state.context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, areas_buf_size, (void*)areas, &errcode);
+    check_error("Creating areas buffer", errcode);
+
+    cl_float3 hf_bmin{ solid.bmin[0], solid.bmin[1], solid.bmin[2] };
+    cl_float3 hf_bmax{ solid.bmax[0], solid.bmax[1], solid.bmax[2] };
+
+    // cl_int clSetKernelArg(cl_kernel kernel,
+    //  cl_uint arg_index,
+    //  size_t arg_size,
+    //  constvoid* arg_value);
+    errcode  = clSetKernelArg(ocl_state.kernel, 0, sizeof(cl_mem), &verts_buf);
+    errcode |= clSetKernelArg(ocl_state.kernel, 1, sizeof(cl_mem), &tris_buf);
+    errcode |= clSetKernelArg(ocl_state.kernel, 2, sizeof(cl_mem), &areas_buf);
+    errcode |= clSetKernelArg(ocl_state.kernel, 3, sizeof(cl_float3), &hf_bmin);
+    errcode |= clSetKernelArg(ocl_state.kernel, 4, sizeof(cl_float3), &hf_bmax);
+    errcode |= clSetKernelArg(ocl_state.kernel, 5, sizeof(float), &solid.cs);
+    errcode |= clSetKernelArg(ocl_state.kernel, 6, sizeof(float), &solid.ch);
+    errcode |= clSetKernelArg(ocl_state.kernel, 7, sizeof(int), &flagMergeThr);
+    check_error("Passing kernel arguments", errcode);
 
     // Create a command queue
     // cl_command_queue clCreateCommandQueueWithProperties(
@@ -161,25 +311,7 @@ bool rcRasterizeTriangles_GPU(rcContext* ctx, const float* verts, const int nv,
     //  const cl_queue_properties* properties,    
     //  cl_int* errcode_ret);
     cl_command_queue queue = clCreateCommandQueueWithProperties(ocl_state.context, ocl_state.device_id, 0, &errcode);
-    errcode != CL_SUCCESS ? printf("Failed to create command queue.\n") : printf("Created command queue no probs.\n");
-
-    // Write the input buffers.
-    // todo[drabard]: These should be non-blocking.
-    // cl_int clEnqueueWriteBuffer(cl_command_queue command_queue,
-    //     cl_mem buffer,
-    //     cl_bool blocking_write,
-    //     size_t offset,
-    //     size_t size,
-    //     constvoid* ptr,
-    //     cl_uint num_events_in_wait_list,
-    //     const cl_event* event_wait_list,
-    //     cl_event* event);    
-    errcode = clEnqueueWriteBuffer(queue, verts_buf, CL_TRUE, 0, verts_buf_size, verts, 0, 0, 0);
-    errcode != CL_SUCCESS ? printf("Failed to write vertex buffer.\n") : printf("Vertex buffer write OK.\n");
-    errcode = clEnqueueWriteBuffer(queue, tris_buf, CL_TRUE, 0, tris_buf_size, tris, 0, 0, 0);
-    errcode != CL_SUCCESS ? printf("Failed to write tris buffer.\n") : printf("Tris buffer write OK.\n");
-    errcode = clEnqueueWriteBuffer(queue, areas_buf, CL_TRUE, 0, areas_buf_size, areas, 0, 0, 0);
-    errcode != CL_SUCCESS ? printf("Failed to write areas buffer.\n") : printf("Areas buffer write OK.\n");
+    check_error("Creating command queue", errcode);
 
     // rcAssert(ctx);
 
