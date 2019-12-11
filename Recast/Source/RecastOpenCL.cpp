@@ -221,7 +221,7 @@ void opencl_test()
     //                       const int* tris, const unsigned char* areas, const int nt,
     //                       rcHeightfield& solid, const int flagMergeThr, opencl_state& ocl_state)
 
-    static float verts[] = {0.0f, 0.0f, 0.0f};
+    static float verts[] = {0.0f, 0.0f, 0.0f, 1.0f, -1.0f, 1.0f, 2.0f, 2.0f, -2.0f};
     static int tris[] = {0, 1, 2};
     static unsigned char areas[] = {42};
 
@@ -299,9 +299,11 @@ bool rcRasterizeTriangles_GPU(rcContext* ctx, const float* verts, const int nv,
     errcode |= clSetKernelArg(ocl_state.kernel, 2, sizeof(cl_mem), &areas_buf);
     errcode |= clSetKernelArg(ocl_state.kernel, 3, sizeof(cl_float3), &hf_bmin);
     errcode |= clSetKernelArg(ocl_state.kernel, 4, sizeof(cl_float3), &hf_bmax);
-    errcode |= clSetKernelArg(ocl_state.kernel, 5, sizeof(float), &solid.cs);
-    errcode |= clSetKernelArg(ocl_state.kernel, 6, sizeof(float), &solid.ch);
-    errcode |= clSetKernelArg(ocl_state.kernel, 7, sizeof(int), &flagMergeThr);
+    errcode |= clSetKernelArg(ocl_state.kernel, 5, sizeof(cl_float), &solid.cs);
+    errcode |= clSetKernelArg(ocl_state.kernel, 6, sizeof(cl_float), &solid.ch);
+    errcode |= clSetKernelArg(ocl_state.kernel, 7, sizeof(cl_int), &solid.width);
+    errcode |= clSetKernelArg(ocl_state.kernel, 8, sizeof(cl_int), &solid.height);
+    errcode |= clSetKernelArg(ocl_state.kernel, 9, sizeof(cl_int), &flagMergeThr);
     check_error("Passing kernel arguments", errcode);
 
     // Create a command queue
@@ -312,6 +314,19 @@ bool rcRasterizeTriangles_GPU(rcContext* ctx, const float* verts, const int nv,
     //  cl_int* errcode_ret);
     cl_command_queue queue = clCreateCommandQueueWithProperties(ocl_state.context, ocl_state.device_id, 0, &errcode);
     check_error("Creating command queue", errcode);
+
+    // cl_int clEnqueueNDRangeKernel(cl_command_queue command_queue,
+    //  cl_kernel kernel,
+    //  cl_uint work_dim,
+    //  const size_t* global_work_offset,
+    //  const size_t* global_work_size,
+    //  const size_t* local_work_size,
+    //  cl_uint num_events_in_wait_list,
+    //  const cl_event* event_wait_list,
+    //  cl_event* event);
+    const size_t global_work_size[] = {nt};
+    errcode = clEnqueueNDRangeKernel(queue, ocl_state.kernel, 1, NULL, global_work_size, NULL, 0, NULL, NULL);
+    check_error("Running the kernel", errcode);
 
     // rcAssert(ctx);
 
