@@ -259,33 +259,41 @@ bool rcRasterizeTriangles_GPU(rcContext* ctx, const float* verts, const int nv,
                           const int* tris, const unsigned char* areas, const int nt,
                           rcHeightfield& solid, opencl_state& ocl_state, const int flagMergeThr /* = 1 */)
 {
-    // Make sure whatever architecture that is, the sizes are consistent.
+    // Make sure that the sizes are consistent across the host and device.
     // todo[drabard]: This could be a static assert.
-    rcAssert(sizeof(int) == sizeof(cl_int)) 
-    rcAssert(sizeof(float) == sizeof(cl_float)) 
+    rcAssert(sizeof(int) == sizeof(cl_int));
+    rcAssert(sizeof(float) == sizeof(cl_float));
+    rcAssert(sizeof(char) == sizeof(cl_char));
+    rcAssert(sizeof(unsigned short) == sizeof(cl_ushort));
 
-    // Put things into memory
-    // Constant:
-    // solid.bmin, solid.bmax, solid.cs, solid.ch, 1.0f/solid.cs, 1.0f/solid.ch, flagMergeThr
-    // Global:
-    // verts [nv], tris [nt], areas [nt], 
-    //      todo[drabard]: !!!output!!!
     cl_int errcode; 
 
     size_t verts_buf_size = nv * 3 * sizeof(float);
     size_t tris_buf_size = nt * 3 * sizeof(int);
     size_t areas_buf_size = nt * sizeof(unsigned char);
+
     // cl_mem clCreateBuffer(cl_context context,
     //     cl_mem_flags flags,
     //     size_t size,
     //     void* host_ptr,
     //     cl_int* errcode_ret);
+    // Create input buffers.
     cl_mem verts_buf = clCreateBuffer(ocl_state.context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, verts_buf_size, (void*)verts, &errcode);
     check_error("Creating vertex buffer", errcode);
     cl_mem tris_buf = clCreateBuffer(ocl_state.context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, tris_buf_size, (void*)tris, &errcode);
     check_error("Creating tris buffer", errcode);
     cl_mem areas_buf = clCreateBuffer(ocl_state.context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, areas_buf_size, (void*)areas, &errcode);
     check_error("Creating areas buffer", errcode);
+
+    // Create output buffers.
+    size_t max_spans_per_tri = 1024;
+    size_t max_spans = max_spans_per_tri * nt;
+    cl_mem out_xy = clCreateBuffer(ocl_state.context, CL_MEM_WRITE_ONLY, sizeof(cl_int)*2*max_spans, NULL, &errcode);
+    check_error("Creating out xy buffer", errcode);
+    cl_mem out_sminmax = clCreateBuffer(ocl_state.context, CL_MEM_WRITE_ONLY, sizeof(cl_ushort)*2*max_spans, NULL, &errcode);
+    check_error("Creating out smin smax buffer", errcode);
+    cl_mem out_areas = clCreateBuffer(ocl_state.context, CL_MEM_WRITE_ONLY, sizeof(cl_ushort)*2*max_spans, NULL, &errcode);
+    check_error("Creating out smin smax buffer", errcode);
 
     cl_float3 hf_bmin{ solid.bmin[0], solid.bmin[1], solid.bmin[2] };
     cl_float3 hf_bmax{ solid.bmax[0], solid.bmax[1], solid.bmax[2] };
@@ -296,14 +304,16 @@ bool rcRasterizeTriangles_GPU(rcContext* ctx, const float* verts, const int nv,
     //  constvoid* arg_value);
     errcode  = clSetKernelArg(ocl_state.kernel, 0, sizeof(cl_mem), &verts_buf);
     errcode |= clSetKernelArg(ocl_state.kernel, 1, sizeof(cl_mem), &tris_buf);
-    errcode |= clSetKernelArg(ocl_state.kernel, 2, sizeof(cl_mem), &areas_buf);
-    errcode |= clSetKernelArg(ocl_state.kernel, 3, sizeof(cl_float3), &hf_bmin);
-    errcode |= clSetKernelArg(ocl_state.kernel, 4, sizeof(cl_float3), &hf_bmax);
-    errcode |= clSetKernelArg(ocl_state.kernel, 5, sizeof(cl_float), &solid.cs);
-    errcode |= clSetKernelArg(ocl_state.kernel, 6, sizeof(cl_float), &solid.ch);
-    errcode |= clSetKernelArg(ocl_state.kernel, 7, sizeof(cl_int), &solid.width);
-    errcode |= clSetKernelArg(ocl_state.kernel, 8, sizeof(cl_int), &solid.height);
-    errcode |= clSetKernelArg(ocl_state.kernel, 9, sizeof(cl_int), &flagMergeThr);
+    errcode |= clSetKernelArg(ocl_state.kernel, 2, sizeof(cl_mem), &out_xy);
+    errcode |= clSetKernelArg(ocl_state.kernel, 3, sizeof(cl_mem), &out_sminmax);
+    errcode |= clSetKernelArg(ocl_state.kernel, 4, sizeof(cl_float3), &hf_bmin);
+    errcode |= clSetKernelArg(ocl_state.kernel, 5, sizeof(cl_float3), &hf_bmax);
+    errcode |= clSetKernelArg(ocl_state.kernel, 6, sizeof(cl_float), &solid.cs);
+    errcode |= clSetKernelArg(ocl_state.kernel, 7, sizeof(cl_float), &solid.ch);
+    errcode |= clSetKernelArg(ocl_state.kernel, 8, sizeof(cl_int), &solid.width);
+    errcode |= clSetKernelArg(ocl_state.kernel, 9, sizeof(cl_int), &solid.height);
+    errcode |= clSetKernelArg(ocl_state.kernel, 10, sizeof(cl_int), &RC_SPAN_MAX_HEIGHT);
+    errcode |= clSetKernelArg(ocl_state.kernel, 11, sizeof(cl_int), &max_spans_per_tri);
     check_error("Passing kernel arguments", errcode);
 
     // Create a command queue
@@ -328,26 +338,5 @@ bool rcRasterizeTriangles_GPU(rcContext* ctx, const float* verts, const int nv,
     errcode = clEnqueueNDRangeKernel(queue, ocl_state.kernel, 1, NULL, global_work_size, NULL, 0, NULL, NULL);
     check_error("Running the kernel", errcode);
 
-    // rcAssert(ctx);
-
-    // rcScopedTimer timer(ctx, RC_TIMER_RASTERIZE_TRIANGLES);
-    
-    // const float ics = 1.0f/solid.cs;
-    // const float ich = 1.0f/solid.ch;
-    // // Rasterize triangles.
-    // for (int i = 0; i < nt; ++i)
-    // {
-    //     const float* v0 = &verts[tris[i*3+0]*3];
-    //     const float* v1 = &verts[tris[i*3+1]*3];
-    //     const float* v2 = &verts[tris[i*3+2]*3];
-    //     // Rasterize.
-    //     if (!rasterizeTri(v0, v1, v2, areas[i], solid, solid.bmin, solid.bmax, solid.cs, ics, ich, flagMergeThr))
-    //     {
-    //         ctx->log(RC_LOG_ERROR, "rcRasterizeTriangles: Out of memory.");
-    //         return false;
-    //     }
-    // }
-
-    // return true;
     return false;
 }
