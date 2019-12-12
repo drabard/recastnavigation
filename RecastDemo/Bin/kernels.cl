@@ -3,6 +3,53 @@ void dividePoly(const float3* in, int nin,
 				float3* out2, int* nout2,
 				float x, int axis)
 {
+	float d[12];
+	for (int i = 0; i < nin; ++i)
+		d[i] = x - in[i][axis];
+
+	int m = 0, n = 0;
+	for (int i = 0, j = nin-1; i < nin; j=i, ++i)
+	{
+		bool ina = d[j] >= 0;
+		bool inb = d[i] >= 0;
+		if (ina != inb)
+		{
+			float s = d[j] / (d[j] - d[i]);
+			out1[m] = in[j] + (in[i] - in[j]*s);
+			*(out2 + n) = *(out1 + m);
+			m++;
+			n++;
+
+			// add the i'th point to the right polygon. Do NOT add points that are on the dividing line
+			// since these were already added above
+			if (d[i] > 0)
+			{
+				*(out1 + m) = *(in + i);
+				m++;
+			}
+			else if (d[i] < 0)
+			{
+				*(out2 + n) = *(in + i);
+				n++;
+			}
+		}
+		else // same side
+		{
+			// add the i'th point to the right polygon. Addition is done even for points on the dividing line
+			if (d[i] >= 0)
+			{
+				*(out1 + m) = *(in + i);
+				m++;
+				if (d[i] != 0)
+					continue;
+			}
+			*(out2 + n) = *(in + i);
+			n++;
+		}
+	}
+
+	*nout1 = m;
+	*nout2 = n;		
 }
 
 void swap_ptrs(float3** a, float3** b)
