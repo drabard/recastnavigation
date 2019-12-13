@@ -2,6 +2,7 @@
 
 #include <stdio.h>
 #include <stdint.h>
+#include <assert.h>
 
 #ifdef __APPLE__
 #include <OpenCL/opencl.h>
@@ -10,6 +11,7 @@
 #endif
 
 #include "RecastAssert.h"
+#include "RecastAlloc.h"
 
 #define MAX_SOURCE_SIZE 0x100000
 
@@ -208,6 +210,22 @@ static bool opencl_init(struct opencl_state& state)
 static void opencl_terminate(struct opencl_state& state)
 {
    clReleaseContext(state.context);
+   clReleaseProgram(state.program);
+   clReleaseKernel(state.kernel);
+}
+
+opencl_state* create_opencl_state()
+{
+    opencl_state* res = (opencl_state*)rcAlloc(sizeof(opencl_state), RC_ALLOC_PERM);
+    if(res == NULL) return res;
+    opencl_init(*res);
+    return res;
+}
+
+void destroy_opencl_state(opencl_state** ocl_state)
+{
+    opencl_terminate(**(ocl_state));
+    *ocl_state = NULL;
 }
 
 void opencl_test()
@@ -266,11 +284,18 @@ bool rcRasterizeTriangles_GPU(rcContext* ctx, const float* verts, const int nv,
     rcAssert(sizeof(char) == sizeof(cl_char));
     rcAssert(sizeof(unsigned short) == sizeof(cl_ushort));
 
+    rcScopedTimer timer(ctx, RC_TIMER_RASTERIZE_TRIANGLES);
+
     cl_int errcode; 
 
     size_t verts_buf_size = nv * 3 * sizeof(float);
     size_t tris_buf_size = nt * 3 * sizeof(int);
     size_t areas_buf_size = nt * sizeof(unsigned char);
+
+    size_t max_spans_per_tri = 1024;
+    size_t max_spans = max_spans_per_tri * nt;
+    size_t out_xy_buf_size = sizeof(cl_int)*2*max_spans;
+    size_t out_sminmax_buf_size = sizeof(cl_ushort)*2*max_spans;
 
     // cl_mem clCreateBuffer(cl_context context,
     //     cl_mem_flags flags,
@@ -282,17 +307,11 @@ bool rcRasterizeTriangles_GPU(rcContext* ctx, const float* verts, const int nv,
     check_error("Creating vertex buffer", errcode);
     cl_mem tris_buf = clCreateBuffer(ocl_state.context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, tris_buf_size, (void*)tris, &errcode);
     check_error("Creating tris buffer", errcode);
-    cl_mem areas_buf = clCreateBuffer(ocl_state.context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, areas_buf_size, (void*)areas, &errcode);
-    check_error("Creating areas buffer", errcode);
 
     // Create output buffers.
-    size_t max_spans_per_tri = 1024;
-    size_t max_spans = max_spans_per_tri * nt;
-    cl_mem out_xy = clCreateBuffer(ocl_state.context, CL_MEM_WRITE_ONLY, sizeof(cl_int)*2*max_spans, NULL, &errcode);
+    cl_mem out_xy = clCreateBuffer(ocl_state.context, CL_MEM_WRITE_ONLY, out_xy_buf_size, NULL, &errcode);
     check_error("Creating out xy buffer", errcode);
-    cl_mem out_sminmax = clCreateBuffer(ocl_state.context, CL_MEM_WRITE_ONLY, sizeof(cl_ushort)*2*max_spans, NULL, &errcode);
-    check_error("Creating out smin smax buffer", errcode);
-    cl_mem out_areas = clCreateBuffer(ocl_state.context, CL_MEM_WRITE_ONLY, sizeof(cl_ushort)*2*max_spans, NULL, &errcode);
+    cl_mem out_sminmax = clCreateBuffer(ocl_state.context, CL_MEM_WRITE_ONLY, out_sminmax_buf_size, NULL, &errcode);
     check_error("Creating out smin smax buffer", errcode);
 
     cl_float3 hf_bmin{ solid.bmin[0], solid.bmin[1], solid.bmin[2] };
@@ -334,9 +353,61 @@ bool rcRasterizeTriangles_GPU(rcContext* ctx, const float* verts, const int nv,
     //  cl_uint num_events_in_wait_list,
     //  const cl_event* event_wait_list,
     //  cl_event* event);
-    const size_t global_work_size[] = {nt};
+    const size_t global_work_size[] = {(size_t)nt};
     errcode = clEnqueueNDRangeKernel(queue, ocl_state.kernel, 1, NULL, global_work_size, NULL, 0, NULL, NULL);
     check_error("Running the kernel", errcode);
 
-    return false;
+    cl_int* spans_xy = (cl_int*)rcAlloc(out_xy_buf_size, RC_ALLOC_TEMP);
+    if(spans_xy == NULL) return false;
+    cl_ushort* spans_sminmax = (cl_ushort*)rcAlloc(out_sminmax_buf_size, RC_ALLOC_TEMP);
+    if(spans_sminmax == NULL) return false;
+
+    errcode = clFinish(queue);
+    check_error("Waiting for kernel to finish", errcode);
+
+    errcode = clEnqueueReadBuffer( queue, out_xy, CL_TRUE, 0, out_xy_buf_size, spans_xy, 0, NULL, NULL );  
+    check_error("Reading out_xy output buffer.", errcode);
+    errcode = clEnqueueReadBuffer( queue, out_sminmax, CL_TRUE, 0, out_sminmax_buf_size, spans_sminmax, 0, NULL, NULL );  
+    check_error("Reading out_sminmax output buffer.", errcode);
+
+    bool is_ok = true;
+    int total_spans = 0;
+    for(int ti = 0; ti < nt; ++ti)
+    {
+        char area = areas[ti];
+        size_t toffset = ti*max_spans_per_tri;
+        int processed_spans = 0;
+        for(;;)
+        {
+            if(processed_spans == max_spans_per_tri) break;
+
+            int idx = toffset + processed_spans * 2;
+            int x = spans_xy[idx];
+            if(x == -1) break; // -1 is a termination value.
+            int y = spans_xy[idx + 1];
+            assert(y >= 0);
+            unsigned short smin = spans_sminmax[idx];
+            unsigned short smax = spans_sminmax[idx + 1];
+            if(!rcAddSpan(ctx, solid, x, y, smin, smax, area, flagMergeThr))
+            {
+                is_ok = false;
+                break;
+            }
+            ++processed_spans;
+        }
+
+        total_spans += processed_spans;
+    }
+
+    printf("Generated %d spans\n", total_spans);
+
+    rcFree(spans_xy);
+    rcFree(spans_sminmax);
+    clReleaseMemObject(out_xy);
+    clReleaseMemObject(out_sminmax);
+    clReleaseMemObject(verts_buf);
+    clReleaseMemObject(tris_buf);
+    clReleaseCommandQueue(queue);
+ 
+    return is_ok;
 }

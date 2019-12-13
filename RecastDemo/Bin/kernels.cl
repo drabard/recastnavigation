@@ -5,7 +5,10 @@ void dividePoly(const float3* in, int nin,
 {
 	float d[12];
 	for (int i = 0; i < nin; ++i)
-		d[i] = x - in[i][axis];
+	{	
+		float unroll[] = {in[i].x, in[i].y, in[i].z};
+		d[i] = x - unroll[axis];
+	}
 
 	int m = 0, n = 0;
 	for (int i = 0, j = nin-1; i < nin; j=i, ++i)
@@ -15,7 +18,7 @@ void dividePoly(const float3* in, int nin,
 		if (ina != inb)
 		{
 			float s = d[j] / (d[j] - d[i]);
-			out1[m] = in[j] + (in[i] - in[j]*s);
+			out1[m] = in[j] + (in[i] - in[j])*s;
 			*(out2 + n) = *(out1 + m);
 			m++;
 			n++;
@@ -56,7 +59,7 @@ void swap_ptrs(float3** a, float3** b)
 {
 	float3* tmp = *a;
 	*a = *b;
-	*b = *a;
+	*b = tmp;
 }
 
 void add_output(int x, int y, 
@@ -66,7 +69,6 @@ void add_output(int x, int y,
 				__global int* out_xy, __global ushort* out_sminmax)
 {
 	int tri_offset = tidx*max_spans_per_tri;
-	int oidx = tri_offset + addedSpans;
 	int oidx2 = tri_offset + addedSpans * 2;
 	out_xy[oidx2] = x;
 	out_xy[oidx2 + 1] = y;
@@ -91,8 +93,8 @@ __kernel void rasterize_tris(__global const float* verts,
 	int tidx = get_global_id(0);
 	if(get_global_id(0) == 0)
 	{
-		printf("Heightfield:\n  min: %v3f\n  max: %v3f\n  cs: %f\n  ch: %f\n  width: %d\n  height: %d\n  max span height: %d\n",
-			hf_bmin, hf_bmax, hf_cs, hf_ch, hf_width, hf_height, max_span_height);
+		printf("[%d] Heightfield:\n  min: %v3f\n  max: %v3f\n  cs: %f\n  ch: %f\n  width: %d\n  height: %d\n  max span height: %d\n",
+			tidx, hf_bmin, hf_bmax, hf_cs, hf_ch, hf_width, hf_height, max_span_height);
 	}
 
 	// Extract triangle vertices from input.
@@ -108,29 +110,33 @@ __kernel void rasterize_tris(__global const float* verts,
 		v0 = (float3)(verts[vidx0], verts[vidx0 + 1], verts[vidx0 + 2]);
 		v1 = (float3)(verts[vidx1], verts[vidx1 + 1], verts[vidx1 + 2]);
 		v2 = (float3)(verts[vidx2], verts[vidx2 + 1], verts[vidx2 + 2]);
-		printf("====\nProcessing triangle %d (vert idcs %d, %d, %d):"
-			"\n  %v3f\n  %v3f\n  %v3f\n", 
-			tidx, vidx0, vidx1, vidx2,
+		printf("[%d] ====\nProcessing triangle %d (vert idcs %d, %d, %d):"
+			"\n  %v3f\n  %v3f\n  %v3f\n",
+			tidx, tidx, vidx0, vidx1, vidx2,
 			v0, v1, v2);
 	}
 
 	// Calculate the bounding box of the triangle
 	float3 tmin = fmin(fmin(v0, v1), v2);
 	float3 tmax = fmax(fmax(v0, v1), v2);
-	printf("Bounding box min: %v3f\n", tmin);
-	printf("Bounding box max: %v3f\n", tmax);
+	printf("[%d] Bounding box min: %v3f\n", tidx, tmin);
+	printf("[%d] Bounding box max: %v3f\n", tidx, tmax);
 
 	// If the triangle doesn't overlap with the bounds of heightfield, discard it.
 	// todo: This may be worth doing as a preprocessing step, to remove divergence.
 	{
-		int3 cmp = hf_bmin > tmax || hf_bmax < tmin;
-		printf("Overlap \n  [%.2v3f][%.2v3f] vs [%.2v3f][%.2v3f]\n  %v3d\n", hf_bmin, hf_bmax, tmin, tmax, cmp);
+		int3 cmp = hf_bmin <= tmax && hf_bmax >= tmin;
+		printf("[%d] Overlap \n  [%.2v3f][%.2v3f] vs [%.2v3f][%.2v3f]\n  %v3d\n", tidx, hf_bmin, hf_bmax, tmin, tmax, cmp);
 		if(!all(cmp))
 		{
-			printf("No overlap, discarding triangle.\n====\n");
+			printf("[%d] No overlap, discarding triangle.\n====\n", tidx);
+
+			// Add terminating span.
+			add_output(-1, -1, 0, 0, tidx, max_spans_per_tri, 0, out_xy, out_sminmax);
 			return;
 		}
 	}
+
 
 	// Find bottom and top z boundaries.
 	float ics = 1.0f/hf_cs;
@@ -140,6 +146,10 @@ __kernel void rasterize_tris(__global const float* verts,
 	y0 = clamp(y0, 0, hf_height-1);
 	y1 = clamp(y1, 0, hf_height-1);
 
+	printf("[%d] y0: %d, y1: %d\n", tidx, y0, y1);
+
+	// if(tidx == 0)
+	// {
 	// Clip the triangle into all grid cells it touches.
 	// [- - - - - - -   in
 	//	- - - - - - -	inrow
@@ -157,6 +167,7 @@ __kernel void rasterize_tris(__global const float* verts,
 	int nvrow, nvIn = 3;
 
 	float by = hf_bmax.y - hf_bmin.y;
+	printf("[%d] by: %f\n", tidx, by);
 
 	int addedSpans = 0;
 	for (int y = y0; y <= y1; ++y)
@@ -164,7 +175,29 @@ __kernel void rasterize_tris(__global const float* verts,
 		// Clip polygon to row. Store the remaining polygon as well
 		const float cy = hf_bmin.z + y*hf_cs;
 
+		int pnvIn = nvIn;
 		dividePoly(in, nvIn, inrow, &nvrow, p1, &nvIn, cy+hf_cs, 2);
+		if(tidx == 1)
+		{
+			printf("dividePoly, x: %f, axis: %d\n  ", cy+hf_cs, 2);
+			for(int i = 0; i < pnvIn; ++i)
+			{
+				printf("[%v3f] ", in[i]);
+			}
+			printf("\n");
+			printf("  inside: ");
+			for(int i = 0; i < nvrow; ++i)
+			{
+				printf("[%v3f] ", inrow[i]);
+			}
+			printf("\n");
+			printf("  outside: ");
+			for(int i = 0; i < nvIn; ++i)
+			{
+				printf("[%v3f] ", p1[i]);
+			}
+			printf("\n");
+		}
 
 		swap_ptrs(&in, &p1);
 
@@ -205,6 +238,7 @@ __kernel void rasterize_tris(__global const float* verts,
 			}
 			smin -= hf_bmin.y;
 			smax -= hf_bmin.y;
+			printf("[%d] smin, smax: %f, %f\n", tidx, smin, smax);
 
 			// Skip the span if it is outside the heightfield bbox
 			if (smax < 0.0f) continue;
@@ -225,10 +259,11 @@ __kernel void rasterize_tris(__global const float* verts,
 		}
 	}
 
+	printf("[%d] Added %d spans", tidx, addedSpans);
+
 	// Add terminating span.
 	if(addedSpans < max_spans_per_tri)
 	{
 		add_output(-1, -1, 0, 0, tidx, max_spans_per_tri, addedSpans, out_xy, out_sminmax);
 	}
-
 }

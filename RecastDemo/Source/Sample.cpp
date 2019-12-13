@@ -169,7 +169,7 @@ void Sample::collectSettings(BuildSettings& settings)
 
 void Sample::resetCommonSettings()
 {
-	m_cellSize = 0.3f;
+	m_cellSize = 0.5f;
 	m_cellHeight = 0.2f;
 	m_agentHeight = 2.0f;
 	m_agentRadius = 0.6f;

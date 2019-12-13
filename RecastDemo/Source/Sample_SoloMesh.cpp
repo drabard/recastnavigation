@@ -29,6 +29,7 @@
 #include "Recast.h"
 #include "RecastDebugDraw.h"
 #include "RecastDump.h"
+#include "RecastOpenCL.h"
 #include "DetourNavMesh.h"
 #include "DetourNavMeshBuilder.h"
 #include "DetourDebugDraw.h"
@@ -384,6 +385,9 @@ bool Sample_SoloMesh::handleBuild()
 	const int nverts = m_geom->getMesh()->getVertCount();
 	const int* tris = m_geom->getMesh()->getTris();
 	const int ntris = m_geom->getMesh()->getTriCount();
+
+    opencl_state* ocl_state = create_opencl_state();
+    // todo[drabard]: This function leaks ocl_state now!
 	
 	//
 	// Step 1. Initialize build config.
@@ -454,7 +458,8 @@ bool Sample_SoloMesh::handleBuild()
 	// the are type for each of the meshes and rasterize them.
 	memset(m_triareas, 0, ntris*sizeof(unsigned char));
 	rcMarkWalkableTriangles(m_ctx, m_cfg.walkableSlopeAngle, verts, nverts, tris, ntris, m_triareas);
-	if (!rcRasterizeTriangles(m_ctx, verts, nverts, tris, m_triareas, ntris, *m_solid, m_cfg.walkableClimb))
+	if (!rcRasterizeTriangles_GPU(m_ctx, verts, nverts, tris, m_triareas, ntris, *m_solid, *ocl_state, m_cfg.walkableClimb))
+	//if (!rcRasterizeTriangles(m_ctx, verts, nverts, tris, m_triareas, ntris, *m_solid, m_cfg.walkableClimb))	
 	{
 		m_ctx->log(RC_LOG_ERROR, "buildNavigation: Could not rasterize triangles.");
 		return false;

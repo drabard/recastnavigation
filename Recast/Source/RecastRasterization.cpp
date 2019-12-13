@@ -205,7 +205,7 @@ static void dividePoly(const float* in, int nin,
 			m++;
 			n++;
 			// add the i'th point to the right polygon. Do NOT add points that are on the dividing line
-			// since these were already added above
+			// since these were already additioned above
 			if (d[i] > 0)
 			{
 				rcVcopy(out1 + m*3, in + i*3);
@@ -281,7 +281,7 @@ static bool rasterizeTri(const float* v0, const float* v1, const float* v2,
 	rcVcopy(&in[1*3], v1);
 	rcVcopy(&in[2*3], v2);
 	int nvrow, nvIn = 3;
-	
+
 	for (int y = y0; y <= y1; ++y)
 	{
 		// Clip polygon to row. Store the remaining polygon as well

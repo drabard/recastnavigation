@@ -194,8 +194,6 @@ int main(int /*argc*/, char** /*argv*/)
 	glEnable(GL_CULL_FACE);
 	glDepthFunc(GL_LEQUAL);
 
-	opencl_test();
-	
 	bool done = false;
 	while(!done)
 	{
