@@ -16,6 +16,40 @@
 
 #define MAX_SOURCE_SIZE 0x100000
 
+#include <sys/time.h>
+
+int64_t getPerfTime_()
+{
+    timeval now;
+    gettimeofday(&now, 0);
+    return (int64_t)now.tv_sec*1000000L + (int64_t)now.tv_usec;
+}
+
+int getPerfTimeUsec_(const int64_t duration)
+{
+    return (int)duration;
+}
+
+struct scope_timer {
+    scope_timer(const char* label, cl_command_queue queue)
+    : label(label)
+    , queue(queue)
+    {
+        duration = getPerfTime_();
+    }
+
+    ~scope_timer()
+    {
+        clFinish(queue);
+        duration = getPerfTime_() - duration;
+        printf("%s: %dus\n", label, duration);
+    }
+
+    const char* label;
+    int64_t duration;
+    cl_command_queue queue;
+};
+
 const char *err_to_str(cl_int error)
 {
     switch (error) {
@@ -298,44 +332,6 @@ bool rcRasterizeTriangles_GPU(rcContext* ctx, const float* verts, const int nv,
     size_t out_xy_buf_size = sizeof(cl_int)*2*max_spans;
     size_t out_sminmax_buf_size = sizeof(cl_ushort)*2*max_spans;
 
-    // cl_mem clCreateBuffer(cl_context context,
-    //     cl_mem_flags flags,
-    //     size_t size,
-    //     void* host_ptr,
-    //     cl_int* errcode_ret);
-    // Create input buffers.
-    cl_mem verts_buf = clCreateBuffer(ocl_state.context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, verts_buf_size, (void*)verts, &errcode);
-    check_error("Creating vertex buffer", errcode);
-    cl_mem tris_buf = clCreateBuffer(ocl_state.context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, tris_buf_size, (void*)tris, &errcode);
-    check_error("Creating tris buffer", errcode);
-
-    // Create output buffers.
-    cl_mem out_xy = clCreateBuffer(ocl_state.context, CL_MEM_WRITE_ONLY, out_xy_buf_size, NULL, &errcode);
-    check_error("Creating out xy buffer", errcode);
-    cl_mem out_sminmax = clCreateBuffer(ocl_state.context, CL_MEM_WRITE_ONLY, out_sminmax_buf_size, NULL, &errcode);
-    check_error("Creating out smin smax buffer", errcode);
-
-    cl_float3 hf_bmin{ solid.bmin[0], solid.bmin[1], solid.bmin[2] };
-    cl_float3 hf_bmax{ solid.bmax[0], solid.bmax[1], solid.bmax[2] };
-
-    // cl_int clSetKernelArg(cl_kernel kernel,
-    //  cl_uint arg_index,
-    //  size_t arg_size,
-    //  constvoid* arg_value);
-    errcode  = clSetKernelArg(ocl_state.kernel, 0, sizeof(cl_mem), &verts_buf);
-    errcode |= clSetKernelArg(ocl_state.kernel, 1, sizeof(cl_mem), &tris_buf);
-    errcode |= clSetKernelArg(ocl_state.kernel, 2, sizeof(cl_mem), &out_xy);
-    errcode |= clSetKernelArg(ocl_state.kernel, 3, sizeof(cl_mem), &out_sminmax);
-    errcode |= clSetKernelArg(ocl_state.kernel, 4, sizeof(cl_float3), &hf_bmin);
-    errcode |= clSetKernelArg(ocl_state.kernel, 5, sizeof(cl_float3), &hf_bmax);
-    errcode |= clSetKernelArg(ocl_state.kernel, 6, sizeof(cl_float), &solid.cs);
-    errcode |= clSetKernelArg(ocl_state.kernel, 7, sizeof(cl_float), &solid.ch);
-    errcode |= clSetKernelArg(ocl_state.kernel, 8, sizeof(cl_int), &solid.width);
-    errcode |= clSetKernelArg(ocl_state.kernel, 9, sizeof(cl_int), &solid.height);
-    errcode |= clSetKernelArg(ocl_state.kernel, 10, sizeof(cl_int), &RC_SPAN_MAX_HEIGHT);
-    errcode |= clSetKernelArg(ocl_state.kernel, 11, sizeof(cl_int), &max_spans_per_tri);
-    check_error("Passing kernel arguments", errcode);
-
     // Create a command queue
     // cl_command_queue clCreateCommandQueueWithProperties(
     //  cl_context context,    
@@ -345,71 +341,144 @@ bool rcRasterizeTriangles_GPU(rcContext* ctx, const float* verts, const int nv,
     cl_command_queue queue = clCreateCommandQueueWithProperties(ocl_state.context, ocl_state.device_id, 0, &errcode);
     check_error("Creating command queue", errcode);
 
-    // cl_int clEnqueueNDRangeKernel(cl_command_queue command_queue,
-    //  cl_kernel kernel,
-    //  cl_uint work_dim,
-    //  const size_t* global_work_offset,
-    //  const size_t* global_work_size,
-    //  const size_t* local_work_size,
-    //  cl_uint num_events_in_wait_list,
-    //  const cl_event* event_wait_list,
-    //  cl_event* event);
-    const size_t global_work_size[] = {(size_t)nt};
-    const size_t local_work_size[] = {(size_t)64};
-    errcode = clEnqueueNDRangeKernel(queue, ocl_state.kernel, 1, NULL, global_work_size, local_work_size, 0, NULL, NULL);
-    check_error("Running the kernel", errcode);
-
-    cl_int* spans_xy = (cl_int*)rcAlloc(out_xy_buf_size, RC_ALLOC_TEMP);
-    if(spans_xy == NULL) return false;
-    cl_ushort* spans_sminmax = (cl_ushort*)rcAlloc(out_sminmax_buf_size, RC_ALLOC_TEMP);
-    if(spans_sminmax == NULL) return false;
-
-    errcode = clFinish(queue);
-    check_error("Waiting for kernel to finish", errcode);
-
-    errcode = clEnqueueReadBuffer( queue, out_xy, CL_TRUE, 0, out_xy_buf_size, spans_xy, 0, NULL, NULL );  
-    check_error("Reading out_xy output buffer.", errcode);
-    errcode = clEnqueueReadBuffer( queue, out_sminmax, CL_TRUE, 0, out_sminmax_buf_size, spans_sminmax, 0, NULL, NULL );  
-    check_error("Reading out_sminmax output buffer.", errcode);
-
-    bool is_ok = true;
-    int total_spans = 0;
-    for(int ti = 0; ti < nt; ++ti)
+    cl_mem verts_buf;
+    cl_mem tris_buf;
+    cl_mem out_xy;
+    cl_mem out_sminmax;
+    cl_int* spans_xy;
+    cl_ushort* spans_sminmax;
     {
-        char area = areas[ti];
-        size_t toffset = ti*max_spans_per_tri*2;
-        int processed_spans = 0;
-        for(;;)
-        {
-            if(processed_spans == max_spans_per_tri) break;
+        scope_timer t("Creating buffers", queue);
 
-            int idx = toffset + processed_spans * 2;
-            int x = spans_xy[idx];
-            if(x == -1) break; // -1 is a termination value.
-            int y = spans_xy[idx + 1];
-            assert(y >= 0);
-            unsigned short smin = spans_sminmax[idx];
-            unsigned short smax = spans_sminmax[idx + 1];
-            if(!rcAddSpan(ctx, solid, x, y, smin, smax, area, flagMergeThr))
-            {
-                is_ok = false;
-                break;
-            }
-            ++processed_spans;
-        }
+        // cl_mem clCreateBuffer(cl_context context,
+        //     cl_mem_flags flags,
+        //     size_t size,
+        //     void* host_ptr,
+        //     cl_int* errcode_ret);
+        // Create input buffers.
+        verts_buf = clCreateBuffer(ocl_state.context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, verts_buf_size, (void*)verts, &errcode);
+        check_error("Creating vertex buffer", errcode);
+        tris_buf = clCreateBuffer(ocl_state.context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, tris_buf_size, (void*)tris, &errcode);
+        check_error("Creating tris buffer", errcode);
 
-        total_spans += processed_spans;
+        spans_xy = (cl_int*)rcAlloc(out_xy_buf_size, RC_ALLOC_TEMP);
+        if(spans_xy == NULL) return false;
+        spans_sminmax = (cl_ushort*)rcAlloc(out_sminmax_buf_size, RC_ALLOC_TEMP);
+        if(spans_sminmax == NULL) return false;
+
+        // Create output buffers.
+        out_xy = clCreateBuffer(ocl_state.context, CL_MEM_WRITE_ONLY | CL_MEM_ALLOC_HOST_PTR, out_xy_buf_size, 0, &errcode);
+        check_error("Creating out xy buffer", errcode);
+        out_sminmax = clCreateBuffer(ocl_state.context, CL_MEM_WRITE_ONLY | CL_MEM_ALLOC_HOST_PTR, out_sminmax_buf_size, 0, &errcode);
+        check_error("Creating out smin smax buffer", errcode);
     }
 
-    printf("Generated %d spans\n", total_spans);
+    {
+        scope_timer t("Passing kernel arguments", queue);
 
-    rcFree(spans_xy);
-    rcFree(spans_sminmax);
-    clReleaseMemObject(out_xy);
-    clReleaseMemObject(out_sminmax);
-    clReleaseMemObject(verts_buf);
-    clReleaseMemObject(tris_buf);
-    clReleaseCommandQueue(queue);
+        cl_float3 hf_bmin{ solid.bmin[0], solid.bmin[1], solid.bmin[2] };
+        cl_float3 hf_bmax{ solid.bmax[0], solid.bmax[1], solid.bmax[2] };
+
+        // cl_int clSetKernelArg(cl_kernel kernel,
+        //  cl_uint arg_index,
+        //  size_t arg_size,
+        //  constvoid* arg_value);
+        errcode  = clSetKernelArg(ocl_state.kernel, 0, sizeof(cl_mem), &verts_buf);
+        errcode |= clSetKernelArg(ocl_state.kernel, 1, sizeof(cl_mem), &tris_buf);
+        errcode |= clSetKernelArg(ocl_state.kernel, 2, sizeof(cl_mem), &out_xy);
+        errcode |= clSetKernelArg(ocl_state.kernel, 3, sizeof(cl_mem), &out_sminmax);
+        errcode |= clSetKernelArg(ocl_state.kernel, 4, sizeof(cl_float3), &hf_bmin);
+        errcode |= clSetKernelArg(ocl_state.kernel, 5, sizeof(cl_float3), &hf_bmax);
+        errcode |= clSetKernelArg(ocl_state.kernel, 6, sizeof(cl_float), &solid.cs);
+        errcode |= clSetKernelArg(ocl_state.kernel, 7, sizeof(cl_float), &solid.ch);
+        errcode |= clSetKernelArg(ocl_state.kernel, 8, sizeof(cl_int), &solid.width);
+        errcode |= clSetKernelArg(ocl_state.kernel, 9, sizeof(cl_int), &solid.height);
+        errcode |= clSetKernelArg(ocl_state.kernel, 10, sizeof(cl_int), &RC_SPAN_MAX_HEIGHT);
+        errcode |= clSetKernelArg(ocl_state.kernel, 11, sizeof(cl_int), &max_spans_per_tri);
+        check_error("Passing kernel arguments", errcode);
+    }
+
+    {
+        scope_timer t("Running the kernel", queue);
+
+        // cl_int clEnqueueNDRangeKernel(cl_command_queue command_queue,
+        //  cl_kernel kernel,
+        //  cl_uint work_dim,
+        //  const size_t* global_work_offset,
+        //  const size_t* global_work_size,
+        //  const size_t* local_work_size,
+        //  cl_uint num_events_in_wait_list,
+        //  const cl_event* event_wait_list,
+        //  cl_event* event);
+        const size_t global_work_size[] = {(size_t)nt};
+        const size_t local_work_size[] = {(size_t)64};
+        errcode = clEnqueueNDRangeKernel(queue, ocl_state.kernel, 1, NULL, global_work_size, local_work_size, 0, NULL, NULL);
+        check_error("Running the kernel", errcode);
+    }
+
+    {
+        scope_timer t("Out buffer allocation", queue);
+
+
+        errcode = clFinish(queue);
+        check_error("Waiting for kernel to finish", errcode);
+    }
+
+    {
+        scope_timer t("Reading out buffers", queue);
+
+        errcode = clEnqueueReadBuffer( queue, out_xy, CL_FALSE, 0, out_xy_buf_size, spans_xy, 0, NULL, NULL );  
+        check_error("Reading out_xy output buffer.", errcode);
+        errcode = clEnqueueReadBuffer( queue, out_sminmax, CL_FALSE, 0, out_sminmax_buf_size, spans_sminmax, 0, NULL, NULL );  
+        check_error("Reading out_sminmax output buffer.", errcode);
+    }
+
+    bool is_ok = true;
+    {
+        scope_timer t("Adding spans", queue);
+        is_ok = true;
+        int total_spans = 0;
+        for(int ti = 0; ti < nt; ++ti)
+        {
+            char area = areas[ti];
+            size_t toffset = ti*max_spans_per_tri*2;
+            int processed_spans = 0;
+            for(;;)
+            {
+                if(processed_spans == max_spans_per_tri) break;
+
+                int idx = toffset + processed_spans * 2;
+                int x = spans_xy[idx];
+                if(x == -1) break; // -1 is a termination value.
+                int y = spans_xy[idx + 1];
+                assert(y >= 0);
+                unsigned short smin = spans_sminmax[idx];
+                unsigned short smax = spans_sminmax[idx + 1];
+                if(!rcAddSpan(ctx, solid, x, y, smin, smax, area, flagMergeThr))
+                {
+                    is_ok = false;
+                    break;
+                }
+                ++processed_spans;
+            }
+
+            total_spans += processed_spans;
+        }
+
+        printf("Generated %d spans\n", total_spans);
+    }
+
+    { 
+        scope_timer t("Cleanup", 0);
+
+        rcFree(spans_xy);
+        rcFree(spans_sminmax);
+        clReleaseMemObject(out_xy);
+        clReleaseMemObject(out_sminmax);
+        clReleaseMemObject(verts_buf);
+        clReleaseMemObject(tris_buf);
+        clReleaseCommandQueue(queue);
+    }
  
     return is_ok;
 }
