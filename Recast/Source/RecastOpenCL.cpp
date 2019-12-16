@@ -2,6 +2,7 @@
 
 #include <stdio.h>
 #include <stdint.h>
+#include <string.h>
 #include <assert.h>
 
 #ifdef __APPLE__
@@ -354,7 +355,8 @@ bool rcRasterizeTriangles_GPU(rcContext* ctx, const float* verts, const int nv,
     //  const cl_event* event_wait_list,
     //  cl_event* event);
     const size_t global_work_size[] = {(size_t)nt};
-    errcode = clEnqueueNDRangeKernel(queue, ocl_state.kernel, 1, NULL, global_work_size, NULL, 0, NULL, NULL);
+    const size_t local_work_size[] = {(size_t)64};
+    errcode = clEnqueueNDRangeKernel(queue, ocl_state.kernel, 1, NULL, global_work_size, local_work_size, 0, NULL, NULL);
     check_error("Running the kernel", errcode);
 
     cl_int* spans_xy = (cl_int*)rcAlloc(out_xy_buf_size, RC_ALLOC_TEMP);
@@ -375,7 +377,7 @@ bool rcRasterizeTriangles_GPU(rcContext* ctx, const float* verts, const int nv,
     for(int ti = 0; ti < nt; ++ti)
     {
         char area = areas[ti];
-        size_t toffset = ti*max_spans_per_tri;
+        size_t toffset = ti*max_spans_per_tri*2;
         int processed_spans = 0;
         for(;;)
         {
