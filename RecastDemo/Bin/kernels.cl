@@ -85,12 +85,14 @@ __kernel void rasterize_tris(__global const float* verts,
 						     const float3 hf_bmax,
 						     const float hf_cs,
 						     const float hf_ch,
+						     const int nt,
 						     const int hf_width, // extent of the heightfield in x dimension
 						     const int hf_height, // extent of the heightfield in z dimension
 						     const int max_span_height,
 						     const int max_spans_per_tri)
 {
 	int tidx = get_global_id(0);
+	if(tidx >= nt) return;
 
 	// Extract triangle vertices from input.
 	// todo: Use vector load functions here

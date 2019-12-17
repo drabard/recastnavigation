@@ -327,10 +327,12 @@ bool rcRasterizeTriangles_GPU(rcContext* ctx, const float* verts, const int nv,
     size_t tris_buf_size = nt * 3 * sizeof(int);
     size_t areas_buf_size = nt * sizeof(unsigned char);
 
-    size_t max_spans_per_tri = 1024;
+    size_t max_spans_per_tri = 512;
     size_t max_spans = max_spans_per_tri * nt;
     size_t out_xy_buf_size = sizeof(cl_int)*2*max_spans;
+    printf("out_xy_buf_size: %ukb\n", out_xy_buf_size >> 20);
     size_t out_sminmax_buf_size = sizeof(cl_ushort)*2*max_spans;
+    printf("out_sminmax_bug_size: %ukB\n", out_sminmax_buf_size >> 20);
 
     // Create a command queue
     // cl_command_queue clCreateCommandQueueWithProperties(
@@ -341,6 +343,7 @@ bool rcRasterizeTriangles_GPU(rcContext* ctx, const float* verts, const int nv,
     cl_command_queue queue = clCreateCommandQueueWithProperties(ocl_state.context, ocl_state.device_id, 0, &errcode);
     check_error("Creating command queue", errcode);
 
+    // todo: Check Map/Unmap for out buffers.
     cl_mem verts_buf;
     cl_mem tris_buf;
     cl_mem out_xy;
@@ -367,9 +370,9 @@ bool rcRasterizeTriangles_GPU(rcContext* ctx, const float* verts, const int nv,
         if(spans_sminmax == NULL) return false;
 
         // Create output buffers.
-        out_xy = clCreateBuffer(ocl_state.context, CL_MEM_WRITE_ONLY | CL_MEM_ALLOC_HOST_PTR, out_xy_buf_size, 0, &errcode);
+        out_xy = clCreateBuffer(ocl_state.context, CL_MEM_WRITE_ONLY, out_xy_buf_size, 0, &errcode);
         check_error("Creating out xy buffer", errcode);
-        out_sminmax = clCreateBuffer(ocl_state.context, CL_MEM_WRITE_ONLY | CL_MEM_ALLOC_HOST_PTR, out_sminmax_buf_size, 0, &errcode);
+        out_sminmax = clCreateBuffer(ocl_state.context, CL_MEM_WRITE_ONLY, out_sminmax_buf_size, 0, &errcode);
         check_error("Creating out smin smax buffer", errcode);
     }
 
@@ -391,10 +394,11 @@ bool rcRasterizeTriangles_GPU(rcContext* ctx, const float* verts, const int nv,
         errcode |= clSetKernelArg(ocl_state.kernel, 5, sizeof(cl_float3), &hf_bmax);
         errcode |= clSetKernelArg(ocl_state.kernel, 6, sizeof(cl_float), &solid.cs);
         errcode |= clSetKernelArg(ocl_state.kernel, 7, sizeof(cl_float), &solid.ch);
-        errcode |= clSetKernelArg(ocl_state.kernel, 8, sizeof(cl_int), &solid.width);
-        errcode |= clSetKernelArg(ocl_state.kernel, 9, sizeof(cl_int), &solid.height);
-        errcode |= clSetKernelArg(ocl_state.kernel, 10, sizeof(cl_int), &RC_SPAN_MAX_HEIGHT);
-        errcode |= clSetKernelArg(ocl_state.kernel, 11, sizeof(cl_int), &max_spans_per_tri);
+        errcode |= clSetKernelArg(ocl_state.kernel, 8, sizeof(cl_int), &nt);
+        errcode |= clSetKernelArg(ocl_state.kernel, 9, sizeof(cl_int), &solid.width);
+        errcode |= clSetKernelArg(ocl_state.kernel, 10, sizeof(cl_int), &solid.height);
+        errcode |= clSetKernelArg(ocl_state.kernel, 11, sizeof(cl_int), &RC_SPAN_MAX_HEIGHT);
+        errcode |= clSetKernelArg(ocl_state.kernel, 12, sizeof(cl_int), &max_spans_per_tri);
         check_error("Passing kernel arguments", errcode);
     }
 
