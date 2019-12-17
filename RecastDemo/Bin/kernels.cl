@@ -62,25 +62,61 @@ void swap_ptrs(float3** a, float3** b)
 	*b = tmp;
 }
 
+void serialize_int(int val, __global unsigned char* buf, int* inOut_oidx)
+{
+	// todo[drabard]: endianness
+	int oidx = *inOut_oidx;
+	int ii = 0;
+	for(int oi = 0; oi < 4; ++oi)
+	{
+		buf[oidx + oi] = ((unsigned char*)(&val))[ii];
+		++ii;
+	}
+
+	(*inOut_oidx) += 4;
+}
+
+void serialize_ushort(ushort val, __global unsigned char* buf, int* inOut_oidx)
+{
+	// todo[drabard]: endianness
+	int oidx = *inOut_oidx;
+	int ii = 0;
+	for(int oi = 0; oi < 2; ++oi)
+	{
+		buf[oidx + oi] = ((unsigned char*)(&val))[ii];
+		++ii;
+	}
+
+	(*inOut_oidx) += 2;
+}
+
 void add_output(int x, int y, 
 				ushort ismin, ushort ismax, 
 				int tidx, int max_spans_per_tri, 
 				int addedSpans, 
-				__global int* out_xy, __global ushort* out_sminmax)
+				__global unsigned char* out)
 {
-	int tri_offset = tidx*max_spans_per_tri * 2;
-	int oidx2 = tri_offset + addedSpans * 2;
-	out_xy[oidx2] = x;
-	out_xy[oidx2 + 1] = y;
-	out_sminmax[oidx2] = ismin;
-	out_sminmax[oidx2 + 1] = ismax;
+	// total bytes to write: 
+	// 4 tidx
+	// 4 x
+	// 4 y
+	// 2 ismin
+	// 2 ismax
+	// 16 bytes total
+	int entry_size = 16;
+	int tri_offset = tidx*max_spans_per_tri * entry_size;
+	int oidx = tri_offset + addedSpans * entry_size;
+	serialize_int(tidx, out, &oidx);
+	serialize_int(x, out, &oidx);
+	serialize_int(y, out, &oidx);
+	serialize_ushort(ismin, out, &oidx);
+	serialize_ushort(ismax, out, &oidx);
 }
 
 // todo: To prevent register spilling, stuff of the same type can be put into a single buffer.
 __kernel void rasterize_tris(__global const float* verts, 
 						  	 __global const int* tris,
-						  	 __global int* out_xy,
-						  	 __global ushort* out_sminmax,
+						  	 __global unsigned char* out,
 						     const float3 hf_bmin,
 						     const float3 hf_bmax,
 						     const float hf_cs,
@@ -120,14 +156,10 @@ __kernel void rasterize_tris(__global const float* verts,
 		
 		if(!all(cmp))
 		{
-			
-
-			// Add terminating span.
-			add_output(-1, -1, 0, 0, tidx, max_spans_per_tri, 0, out_xy, out_sminmax);
+			add_output(-1, -1, 0, 0, tidx, max_spans_per_tri, 0, out);
 			return;
 		}
 	}
-
 
 	// Find bottom and top z boundaries.
 	float ics = 1.0f/hf_cs;
@@ -136,9 +168,7 @@ __kernel void rasterize_tris(__global const float* verts,
 	int y1 = (int)((tmax.z - hf_bmin.z) * ics);
 	y0 = clamp(y0, 0, hf_height-1);
 	y1 = clamp(y1, 0, hf_height-1);
-
 	
-
 	// Clip the triangle into all grid cells it touches.
 	// [- - - - - - -   in
 	//	- - - - - - -	inrow
@@ -157,11 +187,9 @@ __kernel void rasterize_tris(__global const float* verts,
 
 	float by = hf_bmax.y - hf_bmin.y;
 	
-
 	int addedSpans = 0;
 	for (int y = y0; y <= y1; ++y)
 	{
-		
 		// Clip polygon to row. Store the remaining polygon as well
 		const float cy = hf_bmin.z + y*hf_cs;
 
@@ -222,15 +250,14 @@ __kernel void rasterize_tris(__global const float* verts,
 
 			if(addedSpans < max_spans_per_tri)
 			{
-				add_output(x, y, ismin, ismax, tidx, max_spans_per_tri, addedSpans, out_xy, out_sminmax);
+				add_output(x, y, ismin, ismax, tidx, max_spans_per_tri, addedSpans, out);
 				++addedSpans;
 			}
 		}
 	}
 
-	// Add terminating span.
 	if(addedSpans < max_spans_per_tri)
 	{
-		add_output(-1, -1, 0, 0, tidx, max_spans_per_tri, addedSpans, out_xy, out_sminmax);
+		add_output(-1, -1, 0, 0, tidx, max_spans_per_tri, addedSpans, out);
 	}
 }

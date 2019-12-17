@@ -296,6 +296,24 @@ void opencl_test()
 
 // ===========================================================================
 
+static int read_int(const unsigned char* buf, int* inOut_idx)
+{
+    // todo[drabard]: Handle endianness. 
+    // Assumption: host always little endian.
+    int idx = *inOut_idx;
+    *inOut_idx += sizeof(int);
+    return *(int*)(buf + idx);
+}
+
+static unsigned short read_ushort(const unsigned char* buf, int* inOut_idx)
+{
+    // todo[drabard]: Handle endianness. 
+    // Assumption: host always little endian.
+    int idx = *inOut_idx;
+    *inOut_idx += sizeof(unsigned short);
+    return *(unsigned short*)(buf + idx);
+}
+
 /// Rasterizes an indexed triangle mesh into the specified heightfield.
 ///  @ingroup recast
 ///  @param[in,out] ctx             The build context to use during the operation.
@@ -327,12 +345,11 @@ bool rcRasterizeTriangles_GPU(rcContext* ctx, const float* verts, const int nv,
     size_t tris_buf_size = nt * 3 * sizeof(int);
     size_t areas_buf_size = nt * sizeof(unsigned char);
 
-    size_t max_spans_per_tri = 512;
+    size_t entry_size = 16;
+    size_t max_spans_per_tri = 1024;
     size_t max_spans = max_spans_per_tri * nt;
-    size_t out_xy_buf_size = sizeof(cl_int)*2*max_spans;
-    printf("out_xy_buf_size: %ukb\n", out_xy_buf_size >> 20);
-    size_t out_sminmax_buf_size = sizeof(cl_ushort)*2*max_spans;
-    printf("out_sminmax_bug_size: %ukB\n", out_sminmax_buf_size >> 20);
+    size_t out_buf_size = entry_size*max_spans;
+    printf("out_buf_size: %ukb\n", out_buf_size >> 10);
 
     // Create a command queue
     // cl_command_queue clCreateCommandQueueWithProperties(
@@ -346,10 +363,8 @@ bool rcRasterizeTriangles_GPU(rcContext* ctx, const float* verts, const int nv,
     // todo: Check Map/Unmap for out buffers.
     cl_mem verts_buf;
     cl_mem tris_buf;
-    cl_mem out_xy;
-    cl_mem out_sminmax;
-    cl_int* spans_xy;
-    cl_ushort* spans_sminmax;
+    cl_mem out;
+    cl_uchar* spans;
     {
         scope_timer t("Creating buffers", queue);
 
@@ -364,16 +379,12 @@ bool rcRasterizeTriangles_GPU(rcContext* ctx, const float* verts, const int nv,
         tris_buf = clCreateBuffer(ocl_state.context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, tris_buf_size, (void*)tris, &errcode);
         check_error("Creating tris buffer", errcode);
 
-        spans_xy = (cl_int*)rcAlloc(out_xy_buf_size, RC_ALLOC_TEMP);
-        if(spans_xy == NULL) return false;
-        spans_sminmax = (cl_ushort*)rcAlloc(out_sminmax_buf_size, RC_ALLOC_TEMP);
-        if(spans_sminmax == NULL) return false;
+        spans = (cl_uchar*)rcAlloc(out_buf_size, RC_ALLOC_TEMP);
+        if(spans == NULL) return false;
 
         // Create output buffers.
-        out_xy = clCreateBuffer(ocl_state.context, CL_MEM_WRITE_ONLY, out_xy_buf_size, 0, &errcode);
-        check_error("Creating out xy buffer", errcode);
-        out_sminmax = clCreateBuffer(ocl_state.context, CL_MEM_WRITE_ONLY, out_sminmax_buf_size, 0, &errcode);
-        check_error("Creating out smin smax buffer", errcode);
+        out = clCreateBuffer(ocl_state.context, CL_MEM_WRITE_ONLY, out_buf_size, 0, &errcode);
+        check_error("Creating out buffer", errcode);
     }
 
     {
@@ -388,17 +399,16 @@ bool rcRasterizeTriangles_GPU(rcContext* ctx, const float* verts, const int nv,
         //  constvoid* arg_value);
         errcode  = clSetKernelArg(ocl_state.kernel, 0, sizeof(cl_mem), &verts_buf);
         errcode |= clSetKernelArg(ocl_state.kernel, 1, sizeof(cl_mem), &tris_buf);
-        errcode |= clSetKernelArg(ocl_state.kernel, 2, sizeof(cl_mem), &out_xy);
-        errcode |= clSetKernelArg(ocl_state.kernel, 3, sizeof(cl_mem), &out_sminmax);
-        errcode |= clSetKernelArg(ocl_state.kernel, 4, sizeof(cl_float3), &hf_bmin);
-        errcode |= clSetKernelArg(ocl_state.kernel, 5, sizeof(cl_float3), &hf_bmax);
-        errcode |= clSetKernelArg(ocl_state.kernel, 6, sizeof(cl_float), &solid.cs);
-        errcode |= clSetKernelArg(ocl_state.kernel, 7, sizeof(cl_float), &solid.ch);
-        errcode |= clSetKernelArg(ocl_state.kernel, 8, sizeof(cl_int), &nt);
-        errcode |= clSetKernelArg(ocl_state.kernel, 9, sizeof(cl_int), &solid.width);
-        errcode |= clSetKernelArg(ocl_state.kernel, 10, sizeof(cl_int), &solid.height);
-        errcode |= clSetKernelArg(ocl_state.kernel, 11, sizeof(cl_int), &RC_SPAN_MAX_HEIGHT);
-        errcode |= clSetKernelArg(ocl_state.kernel, 12, sizeof(cl_int), &max_spans_per_tri);
+        errcode |= clSetKernelArg(ocl_state.kernel, 2, sizeof(cl_mem), &out);
+        errcode |= clSetKernelArg(ocl_state.kernel, 3, sizeof(cl_float3), &hf_bmin);
+        errcode |= clSetKernelArg(ocl_state.kernel, 4, sizeof(cl_float3), &hf_bmax);
+        errcode |= clSetKernelArg(ocl_state.kernel, 5, sizeof(cl_float), &solid.cs);
+        errcode |= clSetKernelArg(ocl_state.kernel, 6, sizeof(cl_float), &solid.ch);
+        errcode |= clSetKernelArg(ocl_state.kernel, 7, sizeof(cl_int), &nt);
+        errcode |= clSetKernelArg(ocl_state.kernel, 8, sizeof(cl_int), &solid.width);
+        errcode |= clSetKernelArg(ocl_state.kernel, 9, sizeof(cl_int), &solid.height);
+        errcode |= clSetKernelArg(ocl_state.kernel, 10, sizeof(cl_int), &RC_SPAN_MAX_HEIGHT);
+        errcode |= clSetKernelArg(ocl_state.kernel, 11, sizeof(cl_int), &max_spans_per_tri);
         check_error("Passing kernel arguments", errcode);
     }
 
@@ -421,9 +431,7 @@ bool rcRasterizeTriangles_GPU(rcContext* ctx, const float* verts, const int nv,
     }
 
     {
-        scope_timer t("Out buffer allocation", queue);
-
-
+        scope_timer t("Waiting to finish", queue);
         errcode = clFinish(queue);
         check_error("Waiting for kernel to finish", errcode);
     }
@@ -431,10 +439,8 @@ bool rcRasterizeTriangles_GPU(rcContext* ctx, const float* verts, const int nv,
     {
         scope_timer t("Reading out buffers", queue);
 
-        errcode = clEnqueueReadBuffer( queue, out_xy, CL_FALSE, 0, out_xy_buf_size, spans_xy, 0, NULL, NULL );  
-        check_error("Reading out_xy output buffer.", errcode);
-        errcode = clEnqueueReadBuffer( queue, out_sminmax, CL_FALSE, 0, out_sminmax_buf_size, spans_sminmax, 0, NULL, NULL );  
-        check_error("Reading out_sminmax output buffer.", errcode);
+        errcode = clEnqueueReadBuffer( queue, out, CL_FALSE, 0, out_buf_size, spans, 0, NULL, NULL );  
+        check_error("Reading output buffer.", errcode);
     }
 
     bool is_ok = true;
@@ -445,19 +451,19 @@ bool rcRasterizeTriangles_GPU(rcContext* ctx, const float* verts, const int nv,
         for(int ti = 0; ti < nt; ++ti)
         {
             char area = areas[ti];
-            size_t toffset = ti*max_spans_per_tri*2;
+            int toffset = ti*max_spans_per_tri*entry_size;
             int processed_spans = 0;
             for(;;)
             {
                 if(processed_spans == max_spans_per_tri) break;
 
-                int idx = toffset + processed_spans * 2;
-                int x = spans_xy[idx];
+                int tidx = read_int(spans, &toffset);
+                int x = read_int(spans, &toffset);
                 if(x == -1) break; // -1 is a termination value.
-                int y = spans_xy[idx + 1];
+                int y = read_int(spans, &toffset);
                 assert(y >= 0);
-                unsigned short smin = spans_sminmax[idx];
-                unsigned short smax = spans_sminmax[idx + 1];
+                unsigned short smin = read_ushort(spans, &toffset);
+                unsigned short smax = read_ushort(spans, &toffset);
                 if(!rcAddSpan(ctx, solid, x, y, smin, smax, area, flagMergeThr))
                 {
                     is_ok = false;
@@ -475,10 +481,8 @@ bool rcRasterizeTriangles_GPU(rcContext* ctx, const float* verts, const int nv,
     { 
         scope_timer t("Cleanup", 0);
 
-        rcFree(spans_xy);
-        rcFree(spans_sminmax);
-        clReleaseMemObject(out_xy);
-        clReleaseMemObject(out_sminmax);
+        rcFree(spans);
+        clReleaseMemObject(out);
         clReleaseMemObject(verts_buf);
         clReleaseMemObject(tris_buf);
         clReleaseCommandQueue(queue);
