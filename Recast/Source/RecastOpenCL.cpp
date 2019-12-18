@@ -341,6 +341,21 @@ bool rcRasterizeTriangles_GPU(rcContext* ctx, const float* verts, const int nv,
 
     cl_int errcode; 
 
+    size_t global_work_size = 0;
+    size_t work_group_size = 0;
+    size_t nwork_groups = 0;
+    {
+        errcode = clGetKernelWorkGroupInfo(ocl_state.kernel, ocl_state.device_id, CL_KERNEL_WORK_GROUP_SIZE, sizeof(work_group_size), &work_group_size, NULL);
+        check_error("Getting kernel work group size", errcode);
+
+        work_group_size = 64;
+        global_work_size = nt + (work_group_size - (nt % work_group_size));
+        nwork_groups = global_work_size / work_group_size;
+    }
+    printf("Global work size: %u\n", global_work_size);
+    printf("Work group size: %u\n", work_group_size);
+    printf("Number of work groups: %u\n", nwork_groups);
+
     size_t verts_buf_size = nv * 3 * sizeof(float);
     size_t tris_buf_size = nt * 3 * sizeof(int);
     size_t areas_buf_size = nt * sizeof(unsigned char);
@@ -349,6 +364,7 @@ bool rcRasterizeTriangles_GPU(rcContext* ctx, const float* verts, const int nv,
     size_t max_spans_per_tri = 1024;
     size_t max_spans = max_spans_per_tri * nt;
     size_t out_buf_size = entry_size*max_spans;
+    size_t out_nspans_size = sizeof(cl_int)*nwork_groups;
     printf("out_buf_size: %ukb\n", out_buf_size >> 10);
 
     // Create a command queue
@@ -364,6 +380,7 @@ bool rcRasterizeTriangles_GPU(rcContext* ctx, const float* verts, const int nv,
     cl_mem verts_buf;
     cl_mem tris_buf;
     cl_mem out;
+    cl_mem out_nspans;
     cl_uchar* spans;
     {
         scope_timer t("Creating buffers", queue);
@@ -385,6 +402,8 @@ bool rcRasterizeTriangles_GPU(rcContext* ctx, const float* verts, const int nv,
         // Create output buffers.
         out = clCreateBuffer(ocl_state.context, CL_MEM_WRITE_ONLY, out_buf_size, 0, &errcode);
         check_error("Creating out buffer", errcode);
+        out_nspans = clCreateBuffer(ocl_state.context, CL_MEM_READ_WRITE, out_nspans_size, 0, &errcode);
+        check_error("Creating out buffer", errcode);
     }
 
     {
@@ -400,15 +419,17 @@ bool rcRasterizeTriangles_GPU(rcContext* ctx, const float* verts, const int nv,
         errcode  = clSetKernelArg(ocl_state.kernel, 0, sizeof(cl_mem), &verts_buf);
         errcode |= clSetKernelArg(ocl_state.kernel, 1, sizeof(cl_mem), &tris_buf);
         errcode |= clSetKernelArg(ocl_state.kernel, 2, sizeof(cl_mem), &out);
-        errcode |= clSetKernelArg(ocl_state.kernel, 3, sizeof(cl_float3), &hf_bmin);
-        errcode |= clSetKernelArg(ocl_state.kernel, 4, sizeof(cl_float3), &hf_bmax);
-        errcode |= clSetKernelArg(ocl_state.kernel, 5, sizeof(cl_float), &solid.cs);
-        errcode |= clSetKernelArg(ocl_state.kernel, 6, sizeof(cl_float), &solid.ch);
-        errcode |= clSetKernelArg(ocl_state.kernel, 7, sizeof(cl_int), &nt);
-        errcode |= clSetKernelArg(ocl_state.kernel, 8, sizeof(cl_int), &solid.width);
-        errcode |= clSetKernelArg(ocl_state.kernel, 9, sizeof(cl_int), &solid.height);
-        errcode |= clSetKernelArg(ocl_state.kernel, 10, sizeof(cl_int), &RC_SPAN_MAX_HEIGHT);
-        errcode |= clSetKernelArg(ocl_state.kernel, 11, sizeof(cl_int), &max_spans_per_tri);
+        errcode |= clSetKernelArg(ocl_state.kernel, 3, sizeof(cl_mem), &out_nspans);
+        errcode |= clSetKernelArg(ocl_state.kernel, 4, sizeof(cl_int) * work_group_size, NULL);
+        errcode |= clSetKernelArg(ocl_state.kernel, 5, sizeof(cl_float3), &hf_bmin);
+        errcode |= clSetKernelArg(ocl_state.kernel, 6, sizeof(cl_float3), &hf_bmax);
+        errcode |= clSetKernelArg(ocl_state.kernel, 7, sizeof(cl_float), &solid.cs);
+        errcode |= clSetKernelArg(ocl_state.kernel, 8, sizeof(cl_float), &solid.ch);
+        errcode |= clSetKernelArg(ocl_state.kernel, 9, sizeof(cl_int), &nt);
+        errcode |= clSetKernelArg(ocl_state.kernel, 10, sizeof(cl_int), &solid.width);
+        errcode |= clSetKernelArg(ocl_state.kernel, 11, sizeof(cl_int), &solid.height);
+        errcode |= clSetKernelArg(ocl_state.kernel, 12, sizeof(cl_int), &RC_SPAN_MAX_HEIGHT);
+        errcode |= clSetKernelArg(ocl_state.kernel, 13, sizeof(cl_int), &max_spans_per_tri);
         check_error("Passing kernel arguments", errcode);
     }
 
@@ -424,9 +445,7 @@ bool rcRasterizeTriangles_GPU(rcContext* ctx, const float* verts, const int nv,
         //  cl_uint num_events_in_wait_list,
         //  const cl_event* event_wait_list,
         //  cl_event* event);
-        const size_t global_work_size[] = {(size_t)nt};
-        const size_t local_work_size[] = {(size_t)64};
-        errcode = clEnqueueNDRangeKernel(queue, ocl_state.kernel, 1, NULL, global_work_size, local_work_size, 0, NULL, NULL);
+        errcode = clEnqueueNDRangeKernel(queue, ocl_state.kernel, 1, NULL, &global_work_size, &work_group_size, 0, NULL, NULL);
         check_error("Running the kernel", errcode);
     }
 
@@ -448,10 +467,11 @@ bool rcRasterizeTriangles_GPU(rcContext* ctx, const float* verts, const int nv,
         scope_timer t("Adding spans", queue);
         is_ok = true;
         int total_spans = 0;
+        int header_size = sizeof(cl_int);
         for(int ti = 0; ti < nt; ++ti)
         {
             char area = areas[ti];
-            int toffset = ti*max_spans_per_tri*entry_size;
+            int toffset = header_size + ti*max_spans_per_tri*entry_size;
             int processed_spans = 0;
             for(;;)
             {
