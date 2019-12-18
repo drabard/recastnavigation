@@ -92,10 +92,10 @@ void serialize_ushort(ushort val, __global unsigned char* buf, int* inOut_oidx)
 
 void add_output(int x, int y, 
 				ushort ismin, ushort ismax, 
-				int tidx, int max_spans_per_tri, 
-				int added_spans, 
+				int tidx, 
 				int header_size,
-				__global unsigned char* out)
+				__global unsigned char* out,
+				__global int* write_idx)
 {
 	// total bytes to write: 
 	// 4 tidx
@@ -105,21 +105,21 @@ void add_output(int x, int y,
 	// 2 ismax
 	// 16 bytes total
 	int entry_size = 16;
-	int tri_offset = tidx*max_spans_per_tri * entry_size;
-	int oidx = header_size + tri_offset + added_spans * entry_size;
+	int oidx = atomic_add(write_idx, entry_size);
+	oidx += header_size;
 	serialize_int(tidx, out, &oidx);
 	serialize_int(x, out, &oidx);
 	serialize_int(y, out, &oidx);
 	serialize_ushort(ismin, out, &oidx);
 	serialize_ushort(ismax, out, &oidx);
+	atomic_inc((__global int*)out);
 }
 
 // todo: To prevent register spilling, stuff of the same type can be put into a single buffer.
 __kernel void rasterize_tris(__global const float* verts, 
 						  	 __global const int* tris,
 						  	 __global unsigned char* out,
-						  	 __global int* out_nspans,
-						  	 __local int* local_nspans,
+						  	 __global int* write_idx,
 						     const float3 hf_bmin,
 						     const float3 hf_bmax,
 						     const float hf_cs,
@@ -132,6 +132,10 @@ __kernel void rasterize_tris(__global const float* verts,
 {
 	int tidx = get_global_id(0);
 	if(tidx >= nt) return;
+
+	// Header is:
+	// cl_int nspans
+	int header_size = sizeof(int);
 
 	// Extract triangle vertices from input.
 	// todo: Use vector load functions here
@@ -250,30 +254,8 @@ __kernel void rasterize_tris(__global const float* verts,
 			ushort ismin = (ushort)clamp((int)floor(smin * ich), 0, max_span_height);
 			ushort ismax = (ushort)clamp((int)ceil(smax * ich), (int)ismin+1, max_span_height);	
 
-			// Header is:
-			// cl_int nspans
-			int header_size = sizeof(int);
-			if(added_spans < max_spans_per_tri)
-			{
-				add_output(x, y, ismin, ismax, tidx, max_spans_per_tri, added_spans, header_size, out);
-				++added_spans;
-			}
+			add_output(x, y, ismin, ismax, tidx, header_size, out, write_idx);
+			++added_spans;
 		}
-	}
-
-	int local_id = get_local_id(0);
-	local_nspans[local_id] = added_spans;
-
-	work_group_barrier(CLK_LOCAL_MEM_FENCE);    
-	if(local_id == 0)
-	{
-		int sum_local_spans = 0;
-		for(int i = 0; i < get_local_size(0); ++i)
-		{
-			sum_local_spans += local_nspans[local_id];
-		}
-		int group_id = get_group_id(0);
-		out_nspans[group_id] = sum_local_spans;
-		printf("Group %d adding %d spans in total.\n", group_id, sum_local_spans);
 	}
 }

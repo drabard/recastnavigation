@@ -348,7 +348,6 @@ bool rcRasterizeTriangles_GPU(rcContext* ctx, const float* verts, const int nv,
         errcode = clGetKernelWorkGroupInfo(ocl_state.kernel, ocl_state.device_id, CL_KERNEL_WORK_GROUP_SIZE, sizeof(work_group_size), &work_group_size, NULL);
         check_error("Getting kernel work group size", errcode);
 
-        work_group_size = 64;
         global_work_size = nt + (work_group_size - (nt % work_group_size));
         nwork_groups = global_work_size / work_group_size;
     }
@@ -364,7 +363,6 @@ bool rcRasterizeTriangles_GPU(rcContext* ctx, const float* verts, const int nv,
     size_t max_spans_per_tri = 1024;
     size_t max_spans = max_spans_per_tri * nt;
     size_t out_buf_size = entry_size*max_spans;
-    size_t out_nspans_size = sizeof(cl_int)*nwork_groups;
     printf("out_buf_size: %ukb\n", out_buf_size >> 10);
 
     // Create a command queue
@@ -373,14 +371,14 @@ bool rcRasterizeTriangles_GPU(rcContext* ctx, const float* verts, const int nv,
     //  cl_device_id device,
     //  const cl_queue_properties* properties,    
     //  cl_int* errcode_ret);
-    cl_command_queue queue = clCreateCommandQueueWithProperties(ocl_state.context, ocl_state.device_id, 0, &errcode);
+    cl_command_queue queue = clCreateCommandQueue(ocl_state.context, ocl_state.device_id, 0, &errcode);
     check_error("Creating command queue", errcode);
 
     // todo: Check Map/Unmap for out buffers.
     cl_mem verts_buf;
     cl_mem tris_buf;
     cl_mem out;
-    cl_mem out_nspans;
+    cl_mem write_idx;
     cl_uchar* spans;
     {
         scope_timer t("Creating buffers", queue);
@@ -402,7 +400,9 @@ bool rcRasterizeTriangles_GPU(rcContext* ctx, const float* verts, const int nv,
         // Create output buffers.
         out = clCreateBuffer(ocl_state.context, CL_MEM_WRITE_ONLY, out_buf_size, 0, &errcode);
         check_error("Creating out buffer", errcode);
-        out_nspans = clCreateBuffer(ocl_state.context, CL_MEM_READ_WRITE, out_nspans_size, 0, &errcode);
+
+        // Write index is a helper global variable used to properly offset writes to out buffer.
+        write_idx = clCreateBuffer(ocl_state.context, CL_MEM_READ_WRITE, sizeof(cl_int), 0, &errcode);
         check_error("Creating out buffer", errcode);
     }
 
@@ -419,17 +419,16 @@ bool rcRasterizeTriangles_GPU(rcContext* ctx, const float* verts, const int nv,
         errcode  = clSetKernelArg(ocl_state.kernel, 0, sizeof(cl_mem), &verts_buf);
         errcode |= clSetKernelArg(ocl_state.kernel, 1, sizeof(cl_mem), &tris_buf);
         errcode |= clSetKernelArg(ocl_state.kernel, 2, sizeof(cl_mem), &out);
-        errcode |= clSetKernelArg(ocl_state.kernel, 3, sizeof(cl_mem), &out_nspans);
-        errcode |= clSetKernelArg(ocl_state.kernel, 4, sizeof(cl_int) * work_group_size, NULL);
-        errcode |= clSetKernelArg(ocl_state.kernel, 5, sizeof(cl_float3), &hf_bmin);
-        errcode |= clSetKernelArg(ocl_state.kernel, 6, sizeof(cl_float3), &hf_bmax);
-        errcode |= clSetKernelArg(ocl_state.kernel, 7, sizeof(cl_float), &solid.cs);
-        errcode |= clSetKernelArg(ocl_state.kernel, 8, sizeof(cl_float), &solid.ch);
-        errcode |= clSetKernelArg(ocl_state.kernel, 9, sizeof(cl_int), &nt);
-        errcode |= clSetKernelArg(ocl_state.kernel, 10, sizeof(cl_int), &solid.width);
-        errcode |= clSetKernelArg(ocl_state.kernel, 11, sizeof(cl_int), &solid.height);
-        errcode |= clSetKernelArg(ocl_state.kernel, 12, sizeof(cl_int), &RC_SPAN_MAX_HEIGHT);
-        errcode |= clSetKernelArg(ocl_state.kernel, 13, sizeof(cl_int), &max_spans_per_tri);
+        errcode |= clSetKernelArg(ocl_state.kernel, 3, sizeof(cl_mem), &write_idx);
+        errcode |= clSetKernelArg(ocl_state.kernel, 4, sizeof(cl_float3), &hf_bmin);
+        errcode |= clSetKernelArg(ocl_state.kernel, 5, sizeof(cl_float3), &hf_bmax);
+        errcode |= clSetKernelArg(ocl_state.kernel, 6, sizeof(cl_float), &solid.cs);
+        errcode |= clSetKernelArg(ocl_state.kernel, 7, sizeof(cl_float), &solid.ch);
+        errcode |= clSetKernelArg(ocl_state.kernel, 8, sizeof(cl_int), &nt);
+        errcode |= clSetKernelArg(ocl_state.kernel, 9, sizeof(cl_int), &solid.width);
+        errcode |= clSetKernelArg(ocl_state.kernel, 10, sizeof(cl_int), &solid.height);
+        errcode |= clSetKernelArg(ocl_state.kernel, 11, sizeof(cl_int), &RC_SPAN_MAX_HEIGHT);
+        errcode |= clSetKernelArg(ocl_state.kernel, 12, sizeof(cl_int), &max_spans_per_tri);
         check_error("Passing kernel arguments", errcode);
     }
 
@@ -455,10 +454,18 @@ bool rcRasterizeTriangles_GPU(rcContext* ctx, const float* verts, const int nv,
         check_error("Waiting for kernel to finish", errcode);
     }
 
+    int nspans = 0;
+    int read_offset = 0;
+    int header_size = sizeof(cl_int);
     {
         scope_timer t("Reading out buffers", queue);
 
-        errcode = clEnqueueReadBuffer( queue, out, CL_FALSE, 0, out_buf_size, spans, 0, NULL, NULL );  
+        errcode = clEnqueueReadBuffer( queue, out, CL_TRUE, 0, sizeof(cl_int), spans, 0, NULL, NULL );  
+        check_error("Reading output buffer.", errcode);
+        nspans = read_int(spans, &read_offset);
+        printf("nspans: %d\n", nspans);
+
+        errcode = clEnqueueReadBuffer( queue, out, CL_TRUE, sizeof(cl_int), entry_size * nspans, spans + header_size, 0, NULL, NULL );  
         check_error("Reading output buffer.", errcode);
     }
 
@@ -467,35 +474,30 @@ bool rcRasterizeTriangles_GPU(rcContext* ctx, const float* verts, const int nv,
         scope_timer t("Adding spans", queue);
         is_ok = true;
         int total_spans = 0;
-        int header_size = sizeof(cl_int);
-        for(int ti = 0; ti < nt; ++ti)
+        for(int i = 0; i < nspans; ++i)
         {
-            char area = areas[ti];
-            int toffset = header_size + ti*max_spans_per_tri*entry_size;
-            int processed_spans = 0;
-            for(;;)
+            int tidx = read_int(spans, &read_offset);
+            int x = read_int(spans, &read_offset);
+            int y = read_int(spans, &read_offset);
+            unsigned short smin = read_ushort(spans, &read_offset);
+            unsigned short smax = read_ushort(spans, &read_offset);
+            unsigned char area = areas[tidx];
+            if(!rcAddSpan(ctx, solid, x, y, smin, smax, area, flagMergeThr))
             {
-                if(processed_spans == max_spans_per_tri) break;
-
-                int tidx = read_int(spans, &toffset);
-                int x = read_int(spans, &toffset);
-                if(x == -1) break; // -1 is a termination value.
-                int y = read_int(spans, &toffset);
-                assert(y >= 0);
-                unsigned short smin = read_ushort(spans, &toffset);
-                unsigned short smax = read_ushort(spans, &toffset);
-                if(!rcAddSpan(ctx, solid, x, y, smin, smax, area, flagMergeThr))
-                {
-                    is_ok = false;
-                    break;
-                }
-                ++processed_spans;
+                printf("NOPE!\n");
+                is_ok = false;
+                break;
             }
-
-            total_spans += processed_spans;
         }
 
-        printf("Generated %d spans\n", total_spans);
+        if(is_ok)
+        {
+            printf("Generated %d spans\n", nspans);
+        }
+        else
+        {
+            printf("Failed to generate spans\n");
+        }
     }
 
     { 
